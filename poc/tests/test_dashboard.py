@@ -290,9 +290,9 @@ def test_dashboard_shares_expanded_edition_across_screens_and_languages(
 
     app = AppTest.from_file(str(APP), default_timeout=20).run()
     app.sidebar.radio(key="dashboard_screen").set_value("experiments").run()
-    assert app.sidebar.selectbox(key="dashboard_dataset_edition").value == "original"
+    assert app.sidebar.selectbox(key="dashboard_dataset_edition_en").value == "Original"
     assert app.selectbox(key="dashboard_report_id").value == original.experiment_id
-    app.sidebar.selectbox(key="dashboard_dataset_edition").set_value("expanded").run()
+    app.sidebar.selectbox(key="dashboard_dataset_edition_en").set_value("Expanded").run()
     assert any("24 development cases" in caption.value for caption in app.caption)
     assert any("No local evaluation reports" in item.value for item in app.info)
     model.invoke.assert_not_called()
@@ -307,12 +307,57 @@ def test_dashboard_shares_expanded_edition_across_screens_and_languages(
     assert payload["configuration"]["dataset_edition"] == "expanded"
     assert payload["metrics"]["total_cases"] == 24
 
+    app.sidebar.selectbox(key="dashboard_language").set_value("עברית").run()
+    assert not app.exception
+    assert app.sidebar.selectbox(key="dashboard_dataset_edition_he").value == "מורחבת"
+    assert app.session_state.dashboard_selected_edition == "expanded"
+    app.sidebar.selectbox(key="dashboard_language").set_value("English").run()
+    assert not app.exception
+    assert app.sidebar.selectbox(key="dashboard_dataset_edition_en").value == "Expanded"
+
     app.sidebar.radio(key="dashboard_screen").set_value("overview").run()
     app.sidebar.selectbox(key="dashboard_language").set_value("עברית").run()
     app.sidebar.radio(key="dashboard_screen").set_value("investigation").run()
     assert not app.exception
-    assert app.sidebar.selectbox(key="dashboard_dataset_edition").value == "expanded"
+    assert app.sidebar.selectbox(key="dashboard_dataset_edition_he").value == "מורחבת"
+    assert app.session_state.dashboard_selected_edition == "expanded"
     assert app.selectbox(key="dashboard_investigation_baseline").value == expanded_id
     assert any("24 מקרי רגרסיה" in caption.value for caption in app.caption)
     model.with_structured_output.assert_not_called()
     assert model.invoke.call_count == 24
+
+
+@pytest.mark.parametrize(
+    "stored,expected_count,expected_id",
+    [("Original", 12, "original"), ("Expanded", 24, "expanded"), ("מורחבת", 24, "expanded")]
+)
+def test_dashboard_recovers_saved_labels_from_either_language(
+    saved_experiment, stored, expected_count, expected_id
+):
+    _, _, _, model = saved_experiment
+    app = AppTest.from_file(str(APP), default_timeout=20).run()
+    app.session_state.dashboard_selected_edition = stored
+
+    app.sidebar.radio(key="dashboard_screen").set_value("experiments").run()
+
+    assert not app.exception
+    assert app.session_state.dashboard_selected_edition == expected_id
+    assert any(f"{expected_count} development cases" in part.value for part in app.caption)
+    model.invoke.assert_not_called()
+
+
+def test_unknown_saved_edition_requires_explicit_selection(saved_experiment):
+    _, _, _, model = saved_experiment
+    app = AppTest.from_file(str(APP), default_timeout=20).run()
+    app.session_state.dashboard_selected_edition = "unknown-edition"
+
+    app.sidebar.radio(key="dashboard_screen").set_value("experiments").run()
+
+    assert not app.exception
+    assert app.warning
+    assert not any(button.label == "Run development baseline" for button in app.button)
+    app.sidebar.selectbox(key="dashboard_dataset_edition_en").set_value("Expanded").run()
+    assert not app.exception
+    assert app.session_state.dashboard_selected_edition == "expanded"
+    assert any("24 development cases" in part.value for part in app.caption)
+    model.invoke.assert_not_called()

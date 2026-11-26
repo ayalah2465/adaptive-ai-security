@@ -397,8 +397,21 @@ def _show_investigation(
     )
 
 
-def _remember_dataset_edition() -> None:
-    st.session_state.dashboard_selected_edition = st.session_state.dashboard_dataset_edition
+DATASET_EDITIONS: tuple[DatasetEdition, ...] = ("original", "expanded")
+
+
+def _saved_dataset_edition() -> DatasetEdition | None:
+    saved = st.session_state.get("dashboard_selected_edition", "original")
+    for edition in DATASET_EDITIONS:
+        if saved == edition or any(saved == labels[edition] for labels in TRANSLATIONS.values()):
+            return edition
+    return None
+
+
+def _remember_dataset_edition(
+    widget_key: str, editions_by_label: dict[str, DatasetEdition]
+) -> None:
+    st.session_state.dashboard_selected_edition = editions_by_label.get(st.session_state[widget_key])
     for key in (
         "dashboard_report_id", "dashboard_compare_before", "dashboard_compare_after",
         "dashboard_comparison", "dashboard_comparison_error",
@@ -437,17 +450,25 @@ def main() -> None:
     database = Path(database_setting).expanduser()
 
     if screen in ("investigation", "experiments"):
-        editions = ["original", "expanded"]
-        selected = st.session_state.get("dashboard_selected_edition", "original")
-        dataset_edition = st.sidebar.selectbox(
-            labels["dataset_edition"], editions, index=editions.index(selected),
-            format_func=labels.__getitem__, key="dashboard_dataset_edition",
-            on_change=_remember_dataset_edition
+        selected = _saved_dataset_edition()
+        st.session_state.dashboard_selected_edition = selected
+        editions_by_label = {labels[edition]: edition for edition in DATASET_EDITIONS}
+        widget_key = "dashboard_dataset_edition_en" if language == "English" else "dashboard_dataset_edition_he"
+        if selected is None:
+            st.session_state[widget_key] = None
+        choice = st.sidebar.selectbox(
+            labels["dataset_edition"], list(editions_by_label),
+            index=DATASET_EDITIONS.index(selected) if selected is not None else None,
+            key=widget_key, on_change=_remember_dataset_edition,
+            args=(widget_key, editions_by_label)
         )
+        if selected is None or editions_by_label.get(choice) != selected:
+            st.warning(labels["select_dataset_edition"])
+            return
         if screen == "investigation":
-            _show_investigation(database, labels, dataset_edition)
+            _show_investigation(database, labels, selected)
         else:
-            _show_experiments(database, labels, dataset_edition)
+            _show_experiments(database, labels, selected)
         return
 
     screens = {

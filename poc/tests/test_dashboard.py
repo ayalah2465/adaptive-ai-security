@@ -511,3 +511,25 @@ def test_investigation_can_create_baseline_and_handles_connection_failure(
     assert app.subheader[0].value == labels["no_evidence"]
     assert model.invoke.call_count == 13
     model.with_structured_output.assert_not_called()
+
+
+@pytest.mark.parametrize("language", TRANSLATIONS)
+def test_identical_configuration_comparison_is_identified_as_repeatability(
+    saved_experiment, approval_inputs, tmp_path, monkeypatch, language
+):
+    _, _, _, model = saved_experiment
+    cases, _, _, _ = approval_inputs
+    monkeypatch.setattr(workspace, "EXPERIMENTS_DIR", tmp_path / "evaluation")
+    model.invoke.side_effect = [model_response(case) for case in cases] * 2
+    for _ in range(2):
+        run_evaluation("development", max_cases=12, workspace_dir=workspace.EXPERIMENTS_DIR)
+    app = AppTest.from_file(str(APP), default_timeout=20).run()
+    app.sidebar.selectbox(key="dashboard_language").set_value(language).run()
+    _navigate(app, "experiments")
+    labels = TRANSLATIONS[language]
+    _click(app, labels["compare"])
+    assert not app.exception
+    assert not app.error
+    assert labels["same_configuration"] in [item.value for item in app.info]
+    assert app.session_state.dashboard_comparison.regressed_cases == 0
+    assert model.invoke.call_count == 24

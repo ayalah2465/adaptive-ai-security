@@ -361,6 +361,8 @@ def _show_experiments(
         comparison.baseline_experiment_id, comparison.candidate_experiment_id
     ) == (before, after):
         st.caption(f"{comparison.baseline_experiment_id} → {comparison.candidate_experiment_id}")
+        if not comparison.configuration_changes:
+            st.info(labels["same_configuration"])
         st.metric(labels["regressions"], comparison.regressed_cases)
         rows = []
         for name in ("task_success_rate", "field_accuracy"):

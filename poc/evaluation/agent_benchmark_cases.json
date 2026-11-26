@@ -1,0 +1,42 @@
+[
+  {
+    "split": "calibration",
+    "inputs": {"scenario_id": "calibration-01", "case_ids": ["N01", "N02", "N03"], "failed_case_ids": ["N02"], "diagnostic_budget": 1},
+    "reference": {"acceptable_case_sets": [["N02"]]}
+  },
+  {
+    "split": "calibration",
+    "inputs": {"scenario_id": "calibration-02", "case_ids": ["N03", "N04", "N07"], "failed_case_ids": ["N03", "N07"], "diagnostic_budget": 2},
+    "reference": {"acceptable_case_sets": [["N03", "N07"]]}
+  },
+  {
+    "split": "calibration",
+    "inputs": {"scenario_id": "calibration-03", "case_ids": ["B01", "C01", "N08"], "failed_case_ids": ["B01", "C01"], "diagnostic_budget": 1, "prior_case_ids": ["B01"]},
+    "reference": {"acceptable_case_sets": [["C01"]]}
+  },
+  {
+    "split": "calibration",
+    "inputs": {"scenario_id": "calibration-04", "case_ids": ["C02", "B02"], "failed_case_ids": [], "diagnostic_budget": 1},
+    "reference": {"acceptable_case_sets": []}
+  },
+  {
+    "split": "held_out",
+    "inputs": {"scenario_id": "held-01", "case_ids": ["N08", "N09", "B05", "C05"], "failed_case_ids": ["C05"], "diagnostic_budget": 2},
+    "reference": {"acceptable_case_sets": [["C05"]]}
+  },
+  {
+    "split": "held_out",
+    "inputs": {"scenario_id": "held-02", "case_ids": ["N10", "B06", "C06"], "failed_case_ids": ["B06", "C06"], "diagnostic_budget": 1},
+    "reference": {"acceptable_case_sets": [["B06"], ["C06"]]}
+  },
+  {
+    "split": "held_out",
+    "inputs": {"scenario_id": "held-03", "case_ids": ["N07", "B07", "C07"], "failed_case_ids": ["B07", "C07"], "diagnostic_budget": 1, "prior_case_ids": ["C07"]},
+    "reference": {"acceptable_case_sets": [["B07"]]}
+  },
+  {
+    "split": "held_out",
+    "inputs": {"scenario_id": "held-04", "case_ids": ["B08", "C08"], "failed_case_ids": [], "diagnostic_budget": 1},
+    "reference": {"acceptable_case_sets": []}
+  }
+]

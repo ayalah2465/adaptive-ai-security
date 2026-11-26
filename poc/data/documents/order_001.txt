@@ -1,0 +1,7 @@
+PURCHASE ORDER
+
+Order ID: PO-1001
+Supplier: Alpha Technologies
+Total Amount: 1250.00
+Currency: USD
+Delivery Date: 2026-12-15

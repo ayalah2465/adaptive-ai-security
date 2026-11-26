@@ -533,3 +533,40 @@ def test_identical_configuration_comparison_is_identified_as_repeatability(
     assert labels["same_configuration"] in [item.value for item in app.info]
     assert app.session_state.dashboard_comparison.regressed_cases == 0
     assert model.invoke.call_count == 24
+
+
+@pytest.mark.parametrize("language", TRANSLATIONS)
+def test_new_baseline_does_not_show_previous_investigation_result(
+    saved_experiment, approval_inputs, tmp_path, monkeypatch, language
+):
+    _, _, _, model = saved_experiment
+    cases, _, _, _ = approval_inputs
+    monkeypatch.setattr(workspace, "EXPERIMENTS_DIR", tmp_path / "evaluation")
+    model.invoke.side_effect = [model_response(case) for case in cases] * 2
+    first, second = [
+        run_evaluation("development", max_cases=12, workspace_dir=workspace.EXPERIMENTS_DIR)
+        for _ in range(2)
+    ]
+    app = AppTest.from_file(str(APP), default_timeout=20).run()
+    app.sidebar.selectbox(key="dashboard_language").set_value(language).run()
+    labels = TRANSLATIONS[language]
+    _navigate(app, "investigation")
+    app.selectbox(key="dashboard_investigation_baseline").set_value(first.experiment_id).run()
+    _click(app, labels["investigate"])
+    first_result, first_report = app.session_state.dashboard_investigation
+    assert first_report["baseline_report_id"] == first.experiment_id
+    assert app.subheader[0].value == labels["no_evidence"]
+
+    app.selectbox(key="dashboard_investigation_baseline").set_value(second.experiment_id).run()
+    assert not app.exception
+    assert not app.subheader
+    assert labels["investigation_not_started"] in [info.value for info in app.info]
+    _click(app, labels["investigate"])
+
+    assert not app.exception
+    assert app.subheader[0].value == labels["no_evidence"]
+    result, report = app.session_state.dashboard_investigation
+    assert result.experiment_id != first_result.experiment_id
+    assert report["baseline_report_id"] == second.experiment_id
+    assert report["advisor_rounds_used"] == report["diagnostic_cases_used"] == 0
+    model.with_structured_output.assert_not_called()

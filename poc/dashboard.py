@@ -406,19 +406,26 @@ def _start_investigation(
             else:
                 report = json.loads(result.report_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, RuntimeError, DatabaseError):
-        st.session_state.dashboard_investigation_error = True
+        st.session_state.dashboard_investigation_error = report_path.parent.name
     else:
         st.session_state.dashboard_investigation = (result, report)
 
 
-def _show_investigation(
-    database: Path, labels: dict[str, str], dataset_edition: DatasetEdition
+def _show_investigation_result(
+    baseline: str, labels: dict[str, str], dataset_edition: DatasetEdition
 ) -> None:
     existing = st.session_state.get("dashboard_investigation")
-    if existing is not None and existing[1].get("dataset_edition", "original") == dataset_edition:
+    if (
+        existing is not None
+        and existing[1].get("dataset_edition", "original") == dataset_edition
+        and existing[1].get("baseline_report_id") == baseline
+    ):
         result, report = existing
         st.subheader(labels.get(result.status, result.status))
+        st.caption(f"{labels['baseline']} · {baseline}")
         st.metric(labels["proposal_rounds"], report["advisor_rounds_used"])
+        if result.status == "no_evidence":
+            st.info(labels["investigation_no_evidence_details"])
         if result.approval is not None:
             st.info(labels["investigation_waiting"])
             st.code(result.experiment_id, language=None)
@@ -430,9 +437,15 @@ def _show_investigation(
                     "cases": attempt["cases"], "field_accuracy": attempt["field_accuracy"],
                     "task_success_rate": attempt["task_success_rate"]
                 })
-    if st.session_state.get("dashboard_investigation_error"):
+    elif st.session_state.get("dashboard_investigation_error") != baseline:
+        st.info(labels["investigation_not_started"])
+    if st.session_state.get("dashboard_investigation_error") == baseline:
         st.error(labels["investigation_error"])
 
+
+def _show_investigation(
+    database: Path, labels: dict[str, str], dataset_edition: DatasetEdition
+) -> None:
     try:
         with closing(ConfigurationStore(database_path=database)) as store:
             active = store.active.candidate
@@ -469,6 +482,7 @@ def _show_investigation(
         labels["investigate"], on_click=_start_investigation,
         args=(database, eligible[baseline], len(cases), dataset_edition)
     )
+    _show_investigation_result(baseline, labels, dataset_edition)
 
 
 DATASET_EDITIONS: tuple[DatasetEdition, ...] = ("original", "expanded")

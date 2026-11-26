@@ -105,13 +105,11 @@ def test_insufficient_budget_fails_before_creating_workspace(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_systemic_error_stops_before_publishing_report(tmp_path, model):
-    class AuthenticationError(Exception):
-        pass
+@pytest.mark.parametrize("error_name", ["AuthenticationError", "OpenAIConnectionError"])
+def test_systemic_error_stops_before_publishing_report(tmp_path, model, error_name):
+    model.invoke.side_effect = type(error_name, (Exception,), {})("simulated provider failure")
 
-    model.invoke.side_effect = AuthenticationError("simulated authentication failure")
-
-    with pytest.raises(RuntimeError, match="AuthenticationError"):
+    with pytest.raises(RuntimeError, match=error_name):
         run_evaluation("development", max_cases=12, workspace_dir=tmp_path)
 
     model.invoke.assert_called_once()

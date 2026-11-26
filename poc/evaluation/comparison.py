@@ -104,6 +104,8 @@ def _read_report(path: Path) -> _Report:
         or any(case.split != report.configuration.split for case in report.cases)
     ):
         raise ValueError(f"Inconsistent case records in evaluation report {path}")
+    if report.cases and all(case.status == "error" for case in report.cases):
+        raise ValueError("Evaluation report has no results beyond operational errors")
     return report
 
 

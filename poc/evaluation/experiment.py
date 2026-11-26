@@ -17,8 +17,16 @@ from .workspace import create_workspace
 
 SYSTEMIC_MODEL_ERRORS = frozenset({
     "AuthenticationError", "PermissionDeniedError", "NotFoundError",
-    "BadRequestError", "APIConnectionError", "RateLimitError"
+    "BadRequestError", "APIConnectionError", "RateLimitError",
+    "OpenAIConnectionError", "OpenAIAuthenticationError", "OpenAIPermissionDeniedError",
+    "OpenAINotFoundError", "OpenAIBadRequestError", "OpenAIRateLimitError"
 })
+
+
+class EvaluationUnavailableError(RuntimeError):
+    def __init__(self, reason: str | None) -> None:
+        self.reason = reason
+        super().__init__(f"Evaluation stopped after an operational error: {reason or 'unknown'}")
 
 
 @dataclass(frozen=True)
@@ -84,10 +92,11 @@ def run_evaluation(
             "model_error" in execution.failures
             and execution.error_message in SYSTEMIC_MODEL_ERRORS
         ):
-            raise RuntimeError(
-                f"Evaluation stopped after a model error: {execution.error_message}"
-            )
+            raise EvaluationUnavailableError(execution.error_message)
         results.append(evaluate_case(case, execution))
+
+    if all(result.status == "error" for result in results):
+        raise EvaluationUnavailableError(results[-1].error_message)
 
     report_path = save_experiment_report(
         workspace, results, configuration={

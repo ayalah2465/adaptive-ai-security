@@ -16,7 +16,7 @@ from poc.dashboard_translations import TRANSLATIONS
 from poc.evaluation import workspace
 from poc.evaluation.comparison import compare_evaluation_reports, evaluation_comparison_key
 from poc.evaluation.dataset_loader import DatasetEdition, load_cases
-from poc.evaluation.experiment import evaluation_provenance, run_evaluation
+from poc.evaluation.experiment import EvaluationUnavailableError, evaluation_provenance, run_evaluation
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class LocalEvaluationReport:
     split: str
     metrics: dict
     configuration: dict
+    operational_failure: bool
 
     @property
     def dataset_edition(self) -> str:
@@ -233,6 +234,7 @@ def _evaluation_reports() -> dict[str, LocalEvaluationReport]:
             split = report["cases"][0]["split"]
             metrics = report["metrics"]
             configuration = report.get("configuration", {})
+            operational_failure = all(case["status"] == "error" for case in report["cases"])
         except (ValueError, OSError, AttributeError, KeyError, IndexError, TypeError):
             continue
         if (
@@ -241,11 +243,15 @@ def _evaluation_reports() -> dict[str, LocalEvaluationReport]:
             and isinstance(metrics, dict)
             and isinstance(configuration, dict)
         ):
-            reports[experiment_id] = LocalEvaluationReport(path, split, metrics, configuration)
+            reports[experiment_id] = LocalEvaluationReport(
+                path, split, metrics, configuration, operational_failure
+            )
     return reports
 
 
-def _generate_baseline(database: Path, max_cases: int, dataset_edition: DatasetEdition) -> None:
+def _generate_baseline(
+    database: Path, max_cases: int, dataset_edition: DatasetEdition, from_investigation: bool = False
+) -> None:
     st.session_state.pop("dashboard_baseline_error", None)
     try:
         with closing(ConfigurationStore(database_path=database)) as store:
@@ -255,6 +261,13 @@ def _generate_baseline(database: Path, max_cases: int, dataset_edition: DatasetE
                 **store.active.candidate.model_dump()
             )
         st.session_state.dashboard_report_id = result.experiment_id
+        if from_investigation:
+            st.session_state.dashboard_investigation_baseline = result.experiment_id
+    except EvaluationUnavailableError as exc:
+        st.session_state.dashboard_baseline_error = (
+            "baseline_connection_error"
+            if exc.reason in {"APIConnectionError", "OpenAIConnectionError"} else "baseline_error"
+        )
     except (OSError, ValueError, RuntimeError, DatabaseError):
         st.session_state.dashboard_baseline_error = "baseline_error"
 
@@ -289,8 +302,21 @@ def _show_experiments(
     if report_id not in reports:
         st.info(labels["select_report"])
         return
-    st.caption(labels[reports[report_id].split])
-    st.json(reports[report_id].metrics)
+    current = reports[report_id]
+    st.caption(labels[current.split])
+    if current.operational_failure:
+        st.warning(labels["failed_report"])
+    else:
+        st.table([
+            {labels["field"]: labels["cases"], labels["value"]:
+             str(current.metrics.get("total_cases", labels["unavailable"]))},
+            {labels["field"]: labels["task_success"], labels["value"]:
+             _format_result(current.metrics.get("task_success_rate"), labels, "%")},
+            {labels["field"]: labels["field_accuracy"], labels["value"]:
+             _format_result(current.metrics.get("field_accuracy"), labels, "%")}
+        ])
+    with st.expander(labels["technical_details"]):
+        st.json(current.metrics)
 
     groups: dict[tuple, list[str]] = {}
     for report_id, report in reports.items():
@@ -336,16 +362,31 @@ def _show_experiments(
     ) == (before, after):
         st.caption(f"{comparison.baseline_experiment_id} → {comparison.candidate_experiment_id}")
         st.metric(labels["regressions"], comparison.regressed_cases)
-        st.json({
-            "configuration_changes": comparison.configuration_changes,
-            "metrics": {
-                name: {
-                    "baseline": metric.baseline, "candidate": metric.candidate,
-                    "difference": metric.difference
+        rows = []
+        for name in ("task_success_rate", "field_accuracy"):
+            metric = comparison.metrics[name]
+            rows.append({
+                labels["field"]: labels["task_success" if name == "task_success_rate" else name],
+                labels["baseline"]: _format_result(metric.baseline, labels, "%"),
+                labels["candidate_report"]: _format_result(metric.candidate, labels, "%"),
+                labels["difference"]: _format_result(metric.difference, labels, "")
+            })
+        st.table(rows)
+        with st.expander(labels["technical_details"]):
+            st.json({
+                "configuration_changes": comparison.configuration_changes,
+                "metrics": {
+                    name: {
+                        "baseline": metric.baseline, "candidate": metric.candidate,
+                        "difference": metric.difference
+                    }
+                    for name, metric in comparison.metrics.items()
                 }
-                for name, metric in comparison.metrics.items()
-            }
-        })
+            })
+
+
+def _format_result(value: float | None, labels: dict[str, str], unit: str) -> str:
+    return labels["unavailable"] if value is None else f"{value:.2f}{unit}"
 
 
 def _start_investigation(
@@ -403,10 +444,19 @@ def _show_investigation(
         for report_id, report in _evaluation_reports().items()
         if report.split == "development"
         and report.dataset_edition == dataset_edition
+        and not report.operational_failure
         and all(report.configuration.get(key) == value for key, value in expected.items())
     }
     if not eligible:
         st.info(labels["no_baseline"])
+        st.caption(labels["baseline_budget"].format(cases=len(cases)))
+        st.button(
+            labels["generate_baseline"], key="dashboard_create_investigation_baseline",
+            on_click=_generate_baseline, args=(database, len(cases), dataset_edition, True)
+        )
+        error = st.session_state.get("dashboard_baseline_error")
+        if error:
+            st.error(labels[error])
         return
     baseline = st.selectbox(labels["baseline"], list(eligible), key="dashboard_investigation_baseline")
     if baseline not in eligible:

@@ -200,6 +200,7 @@ def test_experiments_generate_and_compare_reports_with_mocked_model(
 
     original = json.loads((reports_dir / baseline_id / "evaluation_report.json").read_bytes())
     for name, changes in (("legacy", None), ("other-model", {"model_name": "other"}),
+                          ("operational-failure", {}),
                           ("other-split", {"split": "held_out"})):
         report = json.loads(json.dumps(original))
         report["experiment_id"] = name
@@ -210,6 +211,9 @@ def test_experiments_generate_and_compare_reports_with_mocked_model(
             if "split" in changes:
                 for case in report["cases"]:
                     case["split"] = "held_out"
+            if name == "operational-failure":
+                for case in report["cases"]:
+                    case["status"] = "error"
         directory = reports_dir / name
         directory.mkdir()
         (directory / "evaluation_report.json").write_text(json.dumps(report), encoding="utf-8")
@@ -218,6 +222,8 @@ def test_experiments_generate_and_compare_reports_with_mocked_model(
     assert not any(button.label == labels["compare"] for button in app.button)
     app.selectbox(key="dashboard_report_id").set_value("legacy").run()
     assert json.loads(app.json[0].value)["total_cases"] == 12
+    app.selectbox(key="dashboard_report_id").set_value("operational-failure").run()
+    assert app.warning[0].value == labels["failed_report"]
 
     model.invoke.side_effect = [model_response(case) for case in cases]
     candidate = run_evaluation(
@@ -244,6 +250,13 @@ def test_experiments_generate_and_compare_reports_with_mocked_model(
     assert not app.exception
     assert app.metric[0].label == TRANSLATIONS[other_language]["regressions"]
     assert app.session_state.dashboard_comparison == comparison
+
+    app.selectbox(key="dashboard_compare_before").set_value(candidate.experiment_id).run()
+    assert app.selectbox(key=f"dashboard_compare_after_{candidate.experiment_id}").value == baseline_id
+    _click(app, TRANSLATIONS[other_language]["compare"])
+    reversed_comparison = app.session_state.dashboard_comparison
+    assert reversed_comparison.baseline_experiment_id == candidate.experiment_id
+    assert reversed_comparison.candidate_experiment_id == baseline_id
     assert model.invoke.call_count == 24
 
 
@@ -466,3 +479,35 @@ def test_invalid_document_is_reported_before_calling_model(saved_experiment, lan
     assert not app.exception
     assert app.error[0].value == TRANSLATIONS[language]["processing_error"]
     model.invoke.assert_not_called()
+
+
+@pytest.mark.parametrize("language", TRANSLATIONS)
+def test_investigation_can_create_baseline_and_handles_connection_failure(
+    saved_experiment, approval_inputs, tmp_path, monkeypatch, language
+):
+    _, _, _, model = saved_experiment
+    cases, _, _, _ = approval_inputs
+    reports = tmp_path / "reports"
+    monkeypatch.setattr(workspace, "EXPERIMENTS_DIR", reports)
+    model.invoke.side_effect = type("OpenAIConnectionError", (Exception,), {})()
+    app = AppTest.from_file(str(APP), default_timeout=20).run()
+    app.sidebar.selectbox(key="dashboard_language").set_value(language).run()
+    labels = TRANSLATIONS[language]
+    _navigate(app, "investigation")
+
+    app.button(key="dashboard_create_investigation_baseline").click().run()
+    assert not app.exception
+    assert app.error[0].value == labels["baseline_connection_error"]
+    assert not list(reports.glob("*/evaluation_report.json"))
+    model.invoke.assert_called_once()
+
+    model.invoke.side_effect = [model_response(case) for case in cases]
+    app.button(key="dashboard_create_investigation_baseline").click().run()
+    assert not app.exception
+    assert not app.error
+    report_id = app.selectbox(key="dashboard_investigation_baseline").value
+    assert (reports / report_id / "evaluation_report.json").is_file()
+    _click(app, labels["investigate"])
+    assert app.subheader[0].value == labels["no_evidence"]
+    assert model.invoke.call_count == 13
+    model.with_structured_output.assert_not_called()

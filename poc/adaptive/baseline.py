@@ -55,5 +55,7 @@ def load_development_baseline(
         for case, result in zip(cases, report.cases)
     ):
         raise ValueError("Baseline report must contain final results in development case order")
+    if report.cases and all(result.status == "error" for result in report.cases):
+        raise ValueError("Baseline report has no results beyond operational errors")
 
     return report.experiment_id, report.cases

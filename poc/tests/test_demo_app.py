@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from poc.demo_app import TRANSLATIONS
 
 APP = Path(__file__).resolve().parents[1] / "demo_app.py"
 
@@ -49,19 +50,21 @@ def test_switching_language_preserves_pending_candidate_and_allows_approval(app)
 
 
 @pytest.mark.parametrize(
-    "button,status,heading",
+    "button,status",
     [
-        ("demo_reject", "rejected", "Candidate rejected"),
-        ("demo_revise", "revision_requested", "Revision requested")
+        ("demo_reject", "rejected"),
+        ("demo_revise", "revision_requested")
     ]
 )
-def test_other_decisions_preserve_baseline(app, button, status, heading):
+@pytest.mark.parametrize("language", TRANSLATIONS)
+def test_other_decisions_preserve_baseline(app, button, status, language):
+    app.sidebar.selectbox(key="demo_language").set_value(language).run()
     app.button(key="demo_start").click().run()
     assert not app.exception
     app.button(key=button).click().run()
 
     assert not app.exception
-    assert app.subheader[0].value == heading
+    assert app.subheader[0].value == TRANSLATIONS[language][status]
     assert app.metric[0].value == "0"
     report = json.loads(app.session_state.demo_result.report_path.read_text(encoding="utf-8"))
     assert report["approval_decision"] == status

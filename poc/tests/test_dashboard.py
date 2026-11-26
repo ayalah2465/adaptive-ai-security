@@ -6,6 +6,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from poc.adaptive.configuration import ConfigurationStore
+from poc.dashboard_translations import TRANSLATIONS
 from poc.evaluation import dataset_loader, workspace
 from poc.evaluation.experiment import run_evaluation
 from poc.tests.test_adaptive_approval_workflow import approval_inputs, model_response
@@ -13,6 +14,16 @@ from poc.tests.test_adaptive_persistence import start_experiment
 
 
 APP = Path(__file__).resolve().parents[1] / "dashboard.py"
+
+
+def _navigate(app, screen):
+    language = app.sidebar.selectbox(key="dashboard_language").value
+    key = "dashboard_screen" if language == "English" else "dashboard_screen_he"
+    app.sidebar.radio(key=key).set_value(screen).run()
+
+
+def _click(app, label):
+    next(button for button in app.button if button.label == label).click().run()
 
 
 @pytest.fixture
@@ -28,9 +39,10 @@ def saved_experiment(tmp_path, monkeypatch, start_experiment, approval_inputs):
 
 
 def _load_experiment(app, experiment_id):
-    app.sidebar.radio(key="dashboard_screen").set_value("approval").run()
+    _navigate(app, "approval")
     app.text_input(key="dashboard_experiment_id").set_value(experiment_id)
-    next(button for button in app.button if button.label == "Load experiment").click().run()
+    language = app.sidebar.selectbox(key="dashboard_language").value
+    _click(app, TRANSLATIONS[language]["load_experiment"])
 
 
 def test_dashboard_restores_approval_switches_language_and_activates(saved_experiment):
@@ -120,8 +132,9 @@ def test_playground_processes_once_and_keeps_result_on_language_change(
     model.invoke.assert_called_once()
 
 
+@pytest.mark.parametrize("language", TRANSLATIONS)
 def test_confirmed_rollback_changes_next_playground_order(
-    saved_experiment, approval_inputs
+    saved_experiment, approval_inputs, language
 ):
     pending, _, database, model = saved_experiment
     cases, _, _, _ = approval_inputs
@@ -134,25 +147,27 @@ def test_confirmed_rollback_changes_next_playground_order(
     model.invoke.return_value = model_response(cases[0])
 
     app = AppTest.from_file(str(APP), default_timeout=20).run()
-    app.sidebar.radio(key="dashboard_screen").set_value("playground").run()
-    next(button for button in app.button if button.label == "Process order").click().run()
+    app.sidebar.selectbox(key="dashboard_language").set_value(language).run()
+    labels = TRANSLATIONS[language]
+    _navigate(app, "playground")
+    _click(app, labels["process_order"])
     assert app.session_state.dashboard_order.version == 1
     assert json.loads(model.invoke.call_args.args[0][1].content)["document"]
 
-    app.sidebar.radio(key="dashboard_screen").set_value("history").run()
+    _navigate(app, "history")
     assert app.metric[0].value == "1"
-    next(button for button in app.button if button.label == "Restore configuration").click().run()
+    _click(app, labels["rollback"])
     assert app.error
     assert app.metric[0].value == "1"
     app.checkbox(key="dashboard_confirm_rollback").check()
-    next(button for button in app.button if button.label == "Restore configuration").click().run()
+    _click(app, labels["rollback"])
     assert not app.exception
     assert app.metric[0].value == "2"
-    assert app.success[0].value == "Restored as configuration version 2."
+    assert app.success[0].value == labels["rollback_done"].format(version=2)
     assert not app.checkbox(key="dashboard_confirm_rollback").value
 
-    app.sidebar.radio(key="dashboard_screen").set_value("playground").run()
-    next(button for button in app.button if button.label == "Process order").click().run()
+    _navigate(app, "playground")
+    _click(app, labels["process_order"])
     assert not app.exception
     assert app.session_state.dashboard_order.version == 2
     instruction, _ = model.invoke.call_args.args[0]
@@ -162,8 +177,9 @@ def test_confirmed_rollback_changes_next_playground_order(
     assert model.invoke.call_count == 2
 
 
+@pytest.mark.parametrize("language", TRANSLATIONS)
 def test_experiments_generate_and_compare_reports_with_mocked_model(
-    saved_experiment, approval_inputs, tmp_path, monkeypatch
+    saved_experiment, approval_inputs, tmp_path, monkeypatch, language
 ):
     _, _, _, model = saved_experiment
     cases, _, _, _ = approval_inputs
@@ -171,14 +187,36 @@ def test_experiments_generate_and_compare_reports_with_mocked_model(
     monkeypatch.setattr(workspace, "EXPERIMENTS_DIR", reports_dir)
     model.invoke.side_effect = [model_response(case) for case in cases]
     app = AppTest.from_file(str(APP), default_timeout=20).run()
-
-    app.sidebar.radio(key="dashboard_screen").set_value("experiments").run()
-    assert any("No local evaluation reports" in info.value for info in app.info)
-    next(button for button in app.button if button.label == "Run development baseline").click().run()
+    app.sidebar.selectbox(key="dashboard_language").set_value(language).run()
+    labels = TRANSLATIONS[language]
+    _navigate(app, "experiments")
+    assert any(labels["no_reports"] == info.value for info in app.info)
+    _click(app, labels["generate_baseline"])
     assert not app.exception
     assert not app.error
     baseline_id = app.selectbox(key="dashboard_report_id").value
     assert (reports_dir / baseline_id / "evaluation_report.json").is_file()
+    assert json.loads(app.json[0].value)["total_cases"] == 12
+
+    original = json.loads((reports_dir / baseline_id / "evaluation_report.json").read_bytes())
+    for name, changes in (("legacy", None), ("other-model", {"model_name": "other"}),
+                          ("other-split", {"split": "held_out"})):
+        report = json.loads(json.dumps(original))
+        report["experiment_id"] = name
+        if changes is None:
+            report.pop("configuration")
+        else:
+            report["configuration"].update(changes)
+            if "split" in changes:
+                for case in report["cases"]:
+                    case["split"] = "held_out"
+        directory = reports_dir / name
+        directory.mkdir()
+        (directory / "evaluation_report.json").write_text(json.dumps(report), encoding="utf-8")
+    app.run()
+    assert any(info.value == labels["no_comparable_reports"] for info in app.info)
+    assert not any(button.label == labels["compare"] for button in app.button)
+    app.selectbox(key="dashboard_report_id").set_value("legacy").run()
     assert json.loads(app.json[0].value)["total_cases"] == 12
 
     model.invoke.side_effect = [model_response(case) for case in cases]
@@ -186,9 +224,14 @@ def test_experiments_generate_and_compare_reports_with_mocked_model(
         "development", max_cases=12, context_isolation=True, workspace_dir=reports_dir
     )
     app.run()
-    app.selectbox(key="dashboard_compare_before").set_value(baseline_id)
-    app.selectbox(key="dashboard_compare_after").set_value(candidate.experiment_id)
-    next(button for button in app.button if button.label == "Compare reports").click().run()
+    assert set(app.selectbox(key="dashboard_compare_before").options) == {
+        baseline_id, candidate.experiment_id
+    }
+    app.selectbox(key="dashboard_compare_before").set_value(baseline_id).run()
+    assert app.selectbox(key=f"dashboard_compare_after_{baseline_id}").options == [
+        candidate.experiment_id
+    ]
+    _click(app, labels["compare"])
 
     assert not app.exception
     assert not app.error
@@ -196,11 +239,17 @@ def test_experiments_generate_and_compare_reports_with_mocked_model(
     comparison = app.session_state.dashboard_comparison
     assert comparison.configuration_changes == {"context_isolation": (False, True)}
     assert comparison.metrics["task_success_rate"].difference == 0
+    other_language = "עברית" if language == "English" else "English"
+    app.sidebar.selectbox(key="dashboard_language").set_value(other_language).run()
+    assert not app.exception
+    assert app.metric[0].label == TRANSLATIONS[other_language]["regressions"]
+    assert app.session_state.dashboard_comparison == comparison
     assert model.invoke.call_count == 24
 
 
+@pytest.mark.parametrize("language", TRANSLATIONS)
 def test_investigation_displays_real_diagnostic_evidence_and_preserves_pending_state(
-    saved_experiment, approval_inputs, tmp_path, monkeypatch
+    saved_experiment, approval_inputs, tmp_path, monkeypatch, language
 ):
     _, _, _, model = saved_experiment
     cases, _, investigation, _ = approval_inputs
@@ -217,21 +266,23 @@ def test_investigation_displays_real_diagnostic_evidence_and_preserves_pending_s
     model.with_structured_output.return_value.invoke.return_value = proposal
     app = AppTest.from_file(str(APP), default_timeout=20).run()
 
-    app.sidebar.radio(key="dashboard_screen").set_value("investigation").run()
+    app.sidebar.selectbox(key="dashboard_language").set_value(language).run()
+    labels = TRANSLATIONS[language]
+    _navigate(app, "investigation")
     assert app.selectbox(key="dashboard_investigation_baseline").value == baseline.experiment_id
     assert model.invoke.call_count == 12
-    next(button for button in app.button if button.label == "Start investigation").click().run()
+    _click(app, labels["investigate"])
     assert not app.exception
     assert not app.error
-    assert app.subheader[0].value == "Awaiting a human decision"
+    assert app.subheader[0].value == labels["awaiting_decision"]
     assert app.text[0].value == proposal.hypothesis
     pending, report = app.session_state.dashboard_investigation
     assert pending.experiment_id == app.code[0].value
     assert report["diagnostics"][0]["cases"][0]["status"] == "passed"
 
-    app.sidebar.radio(key="dashboard_screen").set_value("experiments").run()
+    _navigate(app, "experiments")
     app.sidebar.selectbox(key="dashboard_language").set_value("עברית").run()
-    app.sidebar.radio(key="dashboard_screen").set_value("investigation").run()
+    _navigate(app, "investigation")
     assert not app.exception
     assert app.header[0].value == "חקירה"
     assert app.subheader[0].value == "ממתין להחלטה אנושית"
@@ -317,7 +368,7 @@ def test_dashboard_shares_expanded_edition_across_screens_and_languages(
 
     app.sidebar.radio(key="dashboard_screen").set_value("overview").run()
     app.sidebar.selectbox(key="dashboard_language").set_value("עברית").run()
-    app.sidebar.radio(key="dashboard_screen").set_value("investigation").run()
+    _navigate(app, "investigation")
     assert not app.exception
     assert app.sidebar.selectbox(key="dashboard_dataset_edition_he").value == "מורחבת"
     assert app.session_state.dashboard_selected_edition == "expanded"
@@ -346,6 +397,33 @@ def test_dashboard_recovers_saved_labels_from_either_language(
     model.invoke.assert_not_called()
 
 
+@pytest.mark.parametrize("language", TRANSLATIONS)
+@pytest.mark.parametrize(
+    "decision,expected,version",
+    [("approve", "activated", 1), ("reject", "rejected", 0), ("revise", "revision_requested", 0)]
+)
+def test_dashboard_approval_actions_and_invalid_id(saved_experiment, language, decision, expected, version):
+    pending, report_path, _, model = saved_experiment
+    app = AppTest.from_file(str(APP), default_timeout=20).run()
+    app.sidebar.selectbox(key="dashboard_language").set_value(language).run()
+    labels = TRANSLATIONS[language]
+
+    _load_experiment(app, "missing")
+    assert not app.exception
+    assert app.error[0].value == labels["load_error"]
+    _load_experiment(app, pending.experiment_id)
+    assert not app.exception
+    assert not app.error
+    assert app.button(key=f"dashboard_{decision}").label == labels[decision]
+    app.button(key=f"dashboard_{decision}").click().run()
+
+    assert not app.exception
+    assert app.subheader[0].value == labels[expected]
+    assert app.metric[0].value == str(version)
+    assert json.loads(report_path.read_bytes())["active_version"] == version
+    model.invoke.assert_not_called()
+
+
 def test_unknown_saved_edition_requires_explicit_selection(saved_experiment):
     _, _, _, model = saved_experiment
     app = AppTest.from_file(str(APP), default_timeout=20).run()
@@ -360,4 +438,31 @@ def test_unknown_saved_edition_requires_explicit_selection(saved_experiment):
     assert not app.exception
     assert app.session_state.dashboard_selected_edition == "expanded"
     assert any("24 development cases" in part.value for part in app.caption)
+    model.invoke.assert_not_called()
+
+
+def test_navigation_through_all_screens_survives_live_language_switches(saved_experiment):
+    _, _, _, model = saved_experiment
+    app = AppTest.from_file(str(APP), default_timeout=20).run()
+    for screen in ("overview", "playground", "investigation", "experiments", "approval", "history"):
+        _navigate(app, screen)
+        app.sidebar.selectbox(key="dashboard_language").set_value("עברית").run()
+        assert not app.exception
+        assert app.header[0].value == TRANSLATIONS["עברית"][screen]
+        app.sidebar.selectbox(key="dashboard_language").set_value("English").run()
+        assert not app.exception
+        assert app.header[0].value == TRANSLATIONS["English"][screen]
+    model.invoke.assert_not_called()
+
+
+@pytest.mark.parametrize("language", TRANSLATIONS)
+def test_invalid_document_is_reported_before_calling_model(saved_experiment, language):
+    _, _, _, model = saved_experiment
+    app = AppTest.from_file(str(APP), default_timeout=20).run()
+    app.sidebar.selectbox(key="dashboard_language").set_value(language).run()
+    _navigate(app, "playground")
+    app.text_input(key="dashboard_document_id").set_value("invalid document ID")
+    _click(app, TRANSLATIONS[language]["process_order"])
+    assert not app.exception
+    assert app.error[0].value == TRANSLATIONS[language]["processing_error"]
     model.invoke.assert_not_called()

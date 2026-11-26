@@ -14,7 +14,7 @@ from poc.adaptive.configuration import ConfigurationStore
 from poc.adaptive.experiment import AdaptiveExperiment, ExperimentResult
 from poc.dashboard_translations import TRANSLATIONS
 from poc.evaluation import workspace
-from poc.evaluation.comparison import compare_evaluation_reports
+from poc.evaluation.comparison import compare_evaluation_reports, evaluation_comparison_key
 from poc.evaluation.dataset_loader import DatasetEdition, load_cases
 from poc.evaluation.experiment import evaluation_provenance, run_evaluation
 
@@ -283,26 +283,43 @@ def _show_experiments(
         st.info(labels["no_reports"])
         return
 
-    def label(report_id: str) -> str:
-        return f"{report_id} ({reports[report_id].split})"
-
     report_id = st.selectbox(
-        labels["report_id"], list(reports), format_func=label, key="dashboard_report_id"
+        labels["report_id"], list(reports), key="dashboard_report_id"
     )
+    if report_id not in reports:
+        st.info(labels["select_report"])
+        return
+    st.caption(labels[reports[report_id].split])
     st.json(reports[report_id].metrics)
-    if len(reports) < 2:
+
+    groups: dict[tuple, list[str]] = {}
+    for report_id, report in reports.items():
+        try:
+            key = evaluation_comparison_key(report.path)
+        except (OSError, ValueError):
+            continue
+        groups.setdefault(key, []).append(report_id)
+    candidates = {
+        identifier: [other for other in group if other != identifier]
+        for group in groups.values() if len(group) > 1
+        for identifier in group
+    }
+    if not candidates:
+        st.info(labels["no_comparable_reports"])
         return
 
+    before = st.selectbox(labels["baseline"], list(candidates), key="dashboard_compare_before")
+    if before not in candidates:
+        st.info(labels["select_report"])
+        return
     with st.form("dashboard_compare"):
-        before = st.selectbox(
-            labels["baseline"], list(reports), format_func=label, key="dashboard_compare_before"
-        )
         after = st.selectbox(
-            labels["candidate_report"], list(reports), index=1, format_func=label,
-            key="dashboard_compare_after"
+            labels["candidate_report"], candidates[before], key=f"dashboard_compare_after_{before}"
         )
         if st.form_submit_button(labels["compare"]):
             try:
+                if after not in candidates[before]:
+                    raise ValueError("Candidate is no longer available")
                 comparison = compare_evaluation_reports(reports[before].path, reports[after].path)
             except (ValueError, OSError):
                 st.session_state.pop("dashboard_comparison", None)
@@ -314,7 +331,9 @@ def _show_experiments(
     if st.session_state.get("dashboard_comparison_error"):
         st.error(labels["comparison_error"])
     comparison = st.session_state.get("dashboard_comparison")
-    if comparison is not None:
+    if comparison is not None and (
+        comparison.baseline_experiment_id, comparison.candidate_experiment_id
+    ) == (before, after):
         st.caption(f"{comparison.baseline_experiment_id} → {comparison.candidate_experiment_id}")
         st.metric(labels["regressions"], comparison.regressed_cases)
         st.json({
@@ -390,6 +409,9 @@ def _show_investigation(
         st.info(labels["no_baseline"])
         return
     baseline = st.selectbox(labels["baseline"], list(eligible), key="dashboard_investigation_baseline")
+    if baseline not in eligible:
+        st.info(labels["select_report"])
+        return
     st.caption(labels["investigation_budget"].format(cases=len(cases)))
     st.button(
         labels["investigate"], on_click=_start_investigation,
@@ -398,6 +420,13 @@ def _show_investigation(
 
 
 DATASET_EDITIONS: tuple[DatasetEdition, ...] = ("original", "expanded")
+DASHBOARD_SCREENS = ("overview", "playground", "investigation", "experiments", "approval", "history")
+
+
+def _remember_screen(widget_key: str) -> None:
+    selected = st.session_state[widget_key]
+    if selected in DASHBOARD_SCREENS:
+        st.session_state.dashboard_selected_screen = selected
 
 
 def _saved_dataset_edition() -> DatasetEdition | None:
@@ -434,12 +463,16 @@ def main() -> None:
             [data-testid="stCode"] { direction: ltr; text-align: left; }
             </style>
         """)
+    language_suffix = "en" if language == "English" else "he"
+    navigation_key = "dashboard_screen" if language_suffix == "en" else "dashboard_screen_he"
+    selected_screen = st.session_state.get("dashboard_selected_screen", "overview")
     screen = st.sidebar.radio(
-        labels["navigation"],
-        ["overview", "playground", "investigation", "experiments", "approval", "history"],
-        format_func=labels.__getitem__,
-        key="dashboard_screen"
+        labels["navigation"], DASHBOARD_SCREENS, index=DASHBOARD_SCREENS.index(selected_screen),
+        format_func=lambda screen: labels.get(screen, screen),
+        key=navigation_key, on_change=_remember_screen, args=(navigation_key,)
     )
+    if screen not in DASHBOARD_SCREENS:
+        screen = selected_screen
     st.title(labels["title"])
     st.header(labels[screen])
 
@@ -453,7 +486,7 @@ def main() -> None:
         selected = _saved_dataset_edition()
         st.session_state.dashboard_selected_edition = selected
         editions_by_label = {labels[edition]: edition for edition in DATASET_EDITIONS}
-        widget_key = "dashboard_dataset_edition_en" if language == "English" else "dashboard_dataset_edition_he"
+        widget_key = f"dashboard_dataset_edition_{language_suffix}"
         if selected is None:
             st.session_state[widget_key] = None
         choice = st.sidebar.selectbox(

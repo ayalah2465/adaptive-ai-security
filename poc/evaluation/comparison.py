@@ -124,6 +124,15 @@ def _metric_values(report: _Report) -> dict[str, int | float | None]:
     }
 
 
+def evaluation_comparison_key(path: Path) -> tuple[str, str, str, tuple[str, ...]]:
+    """Return the compatibility requirements for a validated report."""
+    report = _read_report(path)
+    config = report.configuration
+    return config.split, config.model_name, config.cases_sha256, tuple(
+        case.case_id for case in report.cases
+    )
+
+
 def compare_evaluation_reports(
     baseline_path: Path, candidate_path: Path
 ) -> EvaluationComparison:
